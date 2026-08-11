@@ -59,6 +59,11 @@ vi.mock("../../src/telemetry/index.ts", () => ({
 vi.mock("../../src/visualize/server.ts", () => ({
   runVisualizeServer: vi.fn(),
 }));
+vi.mock("../../src/cli/code-export.ts", () => ({
+  publishWikiDirectory: vi.fn(),
+  resolveCodeExportPaths: vi.fn(),
+  withTemporaryGitWorktree: vi.fn(),
+}));
 
 import {
   configureAuthProvider,
@@ -81,6 +86,11 @@ import {
 } from "../../src/scheduling/schedules.ts";
 import { saveOpenWikiOnboardingConfig } from "../../src/setup/onboarding.ts";
 import { runVisualizeServer } from "../../src/visualize/server.ts";
+import {
+  publishWikiDirectory,
+  resolveCodeExportPaths,
+  withTemporaryGitWorktree,
+} from "../../src/cli/code-export.ts";
 import type { CliCommand } from "../../src/cli/commands.ts";
 import {
   runAuthCommand,
@@ -543,6 +553,170 @@ describe("runPrintCommand", () => {
     const agentArgs = vi.mocked(runOpenWikiAgent).mock.calls[0];
     expect(agentArgs[2].userMessage).toBe("augmented");
     expect(process.exitCode).toBe(0);
+  });
+
+  test("exports a requested ref without running repository setup", async () => {
+    vi.mocked(resolveCodeExportPaths).mockResolvedValue({
+      outputDir: "/exports/release",
+      repoRoot: "/repo",
+    });
+    vi.mocked(withTemporaryGitWorktree).mockImplementation(
+      async (_repoRoot, _gitRef, run) =>
+        run({
+          checkoutDir: "/tmp/openwiki-export/checkout",
+          commit: "1234567890abcdef1234567890abcdef12345678",
+        }),
+    );
+    vi.mocked(runCodeModeConnectors).mockResolvedValue("connector guidance");
+    vi.mocked(runOpenWikiAgent).mockResolvedValue(undefined as never);
+    vi.mocked(publishWikiDirectory).mockResolvedValue();
+
+    await runPrintCommand(
+      makeCommand("run", {
+        command: "init",
+        dryRun: false,
+        exportOptions: {
+          force: false,
+          gitRef: "origin/release-2.3",
+          outputDir: "/exports/release",
+          repoDir: "/repo",
+        },
+        language: "zh-CN",
+        languageWarning: null,
+        mode: "code",
+        modeSource: "positional",
+        modelId: null,
+        print: true,
+        shouldStart: true,
+        userMessage: null,
+        telemetryFile: null,
+      }),
+    );
+
+    expect(resolveCodeExportPaths).toHaveBeenCalledWith(
+      "/repo",
+      "/exports/release",
+      false,
+    );
+    expect(withTemporaryGitWorktree).toHaveBeenCalledWith(
+      "/repo",
+      "origin/release-2.3",
+      expect.any(Function),
+    );
+    expect(ensureCodeModeRepoSetup).not.toHaveBeenCalled();
+    expect(runCodeModeConnectors).toHaveBeenCalledWith(
+      "/tmp/openwiki-export/checkout",
+      undefined,
+      expect.any(Function),
+    );
+    expect(runOpenWikiAgent).toHaveBeenCalledWith(
+      "init",
+      "/tmp/openwiki-export/checkout",
+      expect.objectContaining({
+        language: "zh-CN",
+        outputMode: "repository",
+        userMessage: "connector guidance",
+      }),
+      expect.any(Object),
+    );
+    expect(publishWikiDirectory).toHaveBeenCalledWith(
+      "/tmp/openwiki-export/checkout/openwiki",
+      "/exports/release",
+      false,
+    );
+    expect(stderr.join("")).toContain("Exported OpenWiki to /exports/release");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("streams export progress while the run is still in flight", async () => {
+    vi.mocked(resolveCodeExportPaths).mockResolvedValue({
+      outputDir: "/exports/release",
+      repoRoot: "/repo",
+    });
+    vi.mocked(withTemporaryGitWorktree).mockImplementation(
+      async (_repoRoot, _gitRef, run) =>
+        run({
+          checkoutDir: "/tmp/openwiki-export/checkout",
+          commit: "1234567890abcdef1234567890abcdef12345678",
+        }),
+    );
+    vi.mocked(runCodeModeConnectors).mockResolvedValue(undefined);
+    // Snapshot stderr from inside the agent run: an export that only flushes
+    // its text after the agent returns reads as a hang for the whole run.
+    let progressDuringAgentRun = "";
+    vi.mocked(runOpenWikiAgent).mockImplementation(
+      (
+        _command: unknown,
+        _cwd: unknown,
+        options: { onEvent?: (event: unknown) => void },
+      ) => {
+        options.onEvent?.({
+          type: "text",
+          source: "agent",
+          text: "writing architecture page\n",
+        });
+        progressDuringAgentRun = stderr.join("");
+        return Promise.resolve(undefined as never);
+      },
+    );
+    vi.mocked(publishWikiDirectory).mockResolvedValue();
+
+    await runPrintCommand(
+      makeCommand("run", {
+        command: "init",
+        dryRun: false,
+        exportOptions: {
+          force: false,
+          gitRef: "main",
+          outputDir: "/exports/release",
+          repoDir: "/repo",
+        },
+        language: null,
+        languageWarning: null,
+        mode: "code",
+        modeSource: "positional",
+        modelId: null,
+        print: true,
+        shouldStart: true,
+        userMessage: null,
+        telemetryFile: null,
+      }),
+    );
+
+    expect(progressDuringAgentRun).toContain("writing architecture page");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("does not run the agent when export validation fails", async () => {
+    vi.mocked(resolveCodeExportPaths).mockRejectedValue(
+      new Error("Export output directory is not empty"),
+    );
+
+    await runPrintCommand(
+      makeCommand("run", {
+        command: "init",
+        dryRun: false,
+        exportOptions: {
+          force: false,
+          gitRef: "main",
+          outputDir: "/exports/main",
+          repoDir: "/repo",
+        },
+        language: null,
+        languageWarning: null,
+        mode: "code",
+        modeSource: "positional",
+        modelId: null,
+        print: true,
+        shouldStart: true,
+        userMessage: null,
+        telemetryFile: null,
+      }),
+    );
+
+    expect(runOpenWikiAgent).not.toHaveBeenCalled();
+    expect(stderr.join("")).toContain("Export output directory is not empty");
+    expect(process.exitCode).toBe(1);
   });
 
   test("prints the how-to-fix panel on an auth failure and exits 1", async () => {

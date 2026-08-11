@@ -31,6 +31,11 @@ import {
   type RunTelemetryContext,
 } from "../telemetry/index.js";
 import { runVisualizeServer } from "../visualize/server.js";
+import {
+  publishWikiDirectory,
+  resolveCodeExportPaths,
+  withTemporaryGitWorktree,
+} from "./code-export.js";
 import type { CliCommand } from "./commands.js";
 import { isDebugMode } from "./debug.js";
 import { getAuthFix, getAuthFixSteps } from "./diagnostics/auth-fix.js";
@@ -252,14 +257,28 @@ export async function runPrintCommand(
   try {
     const output: string[] = [];
 
-    const runtimeCwd = getRunModeCwd(command.mode);
-    const runtimeOutputMode = getRunModeOutputMode(command.mode);
-
     const handlePrintEvent = (event: OpenWikiRunEvent): void => {
       if (event.type === "text" && event.source !== "subgraph") {
         output.push(event.text);
       }
     };
+
+    if (command.exportOptions) {
+      // Export streams its progress instead of collecting it: a generation run
+      // takes minutes, and buffering the text until the run returns leaves the
+      // terminal silent long enough to read as a hang. It goes to stderr so
+      // stdout stays free for callers piping the command.
+      await runCodeExport(command, (event: OpenWikiRunEvent): void => {
+        if (event.type === "text" && event.source !== "subgraph") {
+          process.stderr.write(event.text);
+        }
+      });
+      process.exitCode = 0;
+      return;
+    }
+
+    const runtimeCwd = getRunModeCwd(command.mode);
+    const runtimeOutputMode = getRunModeOutputMode(command.mode);
 
     const runOptions: OpenWikiRunOptions = {
       debug: isDebugMode(),
@@ -323,6 +342,68 @@ export async function runPrintCommand(
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
   }
+}
+
+async function runCodeExport(
+  command: Extract<CliCommand, { kind: "run" }>,
+  onEvent: (event: OpenWikiRunEvent) => void,
+): Promise<void> {
+  if (!command.exportOptions) {
+    throw new Error("Code export options are required.");
+  }
+  const {
+    force,
+    gitRef,
+    outputDir: outputInput,
+    repoDir: repoInput,
+  } = command.exportOptions;
+  const runOptions: OpenWikiRunOptions = {
+    debug: isDebugMode(),
+    language: command.language,
+    modelId: command.modelId,
+    outputMode: "repository",
+    telemetryFile: command.telemetryFile ?? undefined,
+    onEvent,
+  };
+  const telemetryContext: RunTelemetryContext = {};
+
+  await withRunTelemetry("init", runOptions, telemetryContext, async () => {
+    const { outputDir, repoRoot } = await resolveCodeExportPaths(
+      repoInput,
+      outputInput,
+      force,
+    );
+
+    process.stderr.write(`Preparing ${gitRef} from ${repoRoot}...\n`);
+    await withTemporaryGitWorktree(
+      repoRoot,
+      gitRef,
+      async ({ checkoutDir, commit }) => {
+        process.stderr.write(`Analyzing commit ${commit.slice(0, 12)}...\n`);
+        const userMessage = await runCodeModeConnectors(
+          checkoutDir,
+          undefined,
+          onEvent,
+        );
+        await runOpenWikiAgent(
+          "init",
+          checkoutDir,
+          {
+            ...runOptions,
+            threadId: createOpenWikiThreadId(checkoutDir),
+            userMessage,
+          },
+          telemetryContext,
+        );
+        await publishWikiDirectory(
+          path.join(checkoutDir, "openwiki"),
+          outputDir,
+          force,
+        );
+      },
+    );
+    process.stderr.write(`Exported OpenWiki to ${outputDir}\n`);
+  });
 }
 
 /**

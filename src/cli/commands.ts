@@ -16,6 +16,13 @@ export type HelpRow = {
 export type OpenWikiRunMode = "personal" | "code";
 type CronTarget = Extract<IngestionTarget, string>;
 
+export type CodeExportOptions = {
+  force: boolean;
+  gitRef: string;
+  outputDir: string;
+  repoDir: string;
+};
+
 export type HelpContent = {
   title: string;
   description: string;
@@ -78,6 +85,7 @@ export type CliCommand =
       shouldStart: boolean;
       userMessage: string | null;
       telemetryFile: string | null;
+      exportOptions?: CodeExportOptions;
     }
   | {
       kind: "error";
@@ -396,11 +404,208 @@ export function parseCommand(argv: string[]): CliCommand {
     }
   }
 
+  if (argv[0] === "code" && argv[1] === "export") {
+    return parseCodeExportCommand(argv.slice(2));
+  }
+
   if (isOpenWikiRunMode(argv[0])) {
     return parseRunCommand(argv.slice(1), argv[0], "positional");
   }
 
   return parseRunCommand(argv, "code", "default");
+}
+
+/** Parse the non-interactive code-export command. */
+function parseCodeExportCommand(argv: string[]): CliCommand {
+  let force = false;
+  let gitRef: string | null = null;
+  let language: string | null = null;
+  let modelId: string | null = null;
+  let outputDir: string | null = null;
+  let repoDir: string | null = null;
+  let telemetryFile: string | null = null;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
+    if (arg === "--help" || arg === "-h") {
+      return { kind: "help", exitCode: 0 };
+    }
+
+    if (arg === "--debug") {
+      process.env.OPENWIKI_DEBUG = "1";
+      continue;
+    }
+
+    if (arg === "--force") {
+      force = true;
+      continue;
+    }
+
+    if (arg === "--print" || arg === "-p") {
+      // Export is always a one-shot command. Accepting --print makes it easy to
+      // compose with scripts that add the flag to every non-interactive run.
+      continue;
+    }
+
+    if (arg === "--repo" || arg === "--ref" || arg === "--output") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        return exportOptionValueError(arg);
+      }
+
+      if (arg === "--repo") repoDir = value.trim();
+      else if (arg === "--ref") gitRef = value.trim();
+      else outputDir = value.trim();
+      index += 1;
+      continue;
+    }
+
+    if (
+      arg.startsWith("--repo=") ||
+      arg.startsWith("--ref=") ||
+      arg.startsWith("--output=")
+    ) {
+      const [option, value = ""] = arg.split("=", 2);
+      if (!value) {
+        return exportOptionValueError(option);
+      }
+
+      if (option === "--repo") repoDir = value.trim();
+      else if (option === "--ref") gitRef = value.trim();
+      else outputDir = value.trim();
+      continue;
+    }
+
+    if (arg === "--language" || arg === "-l") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: `${arg} requires a locale.`,
+        };
+      }
+      language = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--modelId" || arg === "--model-id") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: `${arg} requires a model ID.`,
+        };
+      }
+      const parsedModelId = normalizeModelId(value);
+      if (!isValidModelId(parsedModelId)) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: `Invalid model ID: ${value}`,
+        };
+      }
+      modelId = parsedModelId;
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--modelId=") || arg.startsWith("--model-id=")) {
+      const [, value = ""] = arg.split("=", 2);
+      const parsedModelId = normalizeModelId(value);
+      if (!isValidModelId(parsedModelId)) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: `Invalid model ID: ${value}`,
+        };
+      }
+      modelId = parsedModelId;
+      continue;
+    }
+
+    if (arg === "--telemetry-file") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: "--telemetry-file requires a path.",
+        };
+      }
+      telemetryFile = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--telemetry-file=")) {
+      const [, value = ""] = arg.split("=", 2);
+      if (!value) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message: "--telemetry-file requires a path.",
+        };
+      }
+      telemetryFile = value;
+      continue;
+    }
+
+    return {
+      kind: "error",
+      exitCode: 1,
+      message: `Unknown option for code export: ${arg}`,
+    };
+  }
+
+  const missingOptions: string[] = [];
+  if (!repoDir) missingOptions.push("--repo");
+  if (!gitRef) missingOptions.push("--ref");
+  if (!outputDir) missingOptions.push("--output");
+  if (!repoDir || !gitRef || !outputDir) {
+    return {
+      kind: "error",
+      exitCode: 1,
+      message: `openwiki code export requires ${missingOptions.join(", ")}.`,
+    };
+  }
+
+  const resolvedLanguage = resolveLanguage(language);
+
+  return {
+    kind: "run",
+    exitCode: 0,
+    command: "init",
+    dryRun: false,
+    exportOptions: {
+      force,
+      gitRef,
+      outputDir,
+      repoDir,
+    },
+    language: resolvedLanguage.language ?? null,
+    languageWarning: resolvedLanguage.warning ?? null,
+    mode: "code",
+    modeSource: "positional",
+    modelId,
+    print: true,
+    shouldStart: true,
+    telemetryFile,
+    userMessage: null,
+  };
+}
+
+function exportOptionValueError(
+  option: string,
+): Extract<CliCommand, { kind: "error" }> {
+  return {
+    kind: "error",
+    exitCode: 1,
+    message: `${option} requires a value.`,
+  };
 }
 
 function parseRunCommand(
@@ -736,6 +941,7 @@ export const helpContent: HelpContent = {
   usage: [
     "openwiki [--init|--update] [message]",
     "openwiki code [--init|--update] [message]",
+    "openwiki code export --repo <path> --ref <git-ref> --output <path> [--language <locale>] [--force]",
     "openwiki personal [--init|--update] [message]",
     "openwiki --mode <personal|code> [--init|--update] [message]",
     "openwiki [--language <locale>] [--init|--update] [message]",
@@ -758,6 +964,11 @@ export const helpContent: HelpContent = {
       label: "openwiki code",
       description:
         "Run OpenWiki for the current repository, writing docs under repo openwiki/ and using GitHub Actions for recurrence.",
+    },
+    {
+      label: "openwiki code export",
+      description:
+        "Analyze a local repository ref in an isolated worktree and export its generated wiki to a custom directory.",
     },
     {
       label: "openwiki personal",
@@ -853,6 +1064,25 @@ export const helpContent: HelpContent = {
       description: "Use a model ID for this run.",
     },
     {
+      label: "--repo <path>",
+      description: "For code export: local Git repository to analyze.",
+    },
+    {
+      label: "--ref <git-ref>",
+      description:
+        "For code export: local branch, remote-tracking branch, tag, or commit to analyze.",
+    },
+    {
+      label: "--output <path>",
+      description:
+        "For code export: destination directory for the generated wiki.",
+    },
+    {
+      label: "--force",
+      description:
+        "For code export: replace an existing non-empty output directory after generation succeeds.",
+    },
+    {
       label: "--scheduled",
       description:
         "For ingest only: run scheduled-only ingestion for scheduler-managed runs.",
@@ -883,6 +1113,7 @@ export const helpContent: HelpContent = {
     "openwiki --init",
     "openwiki personal --init",
     "openwiki code --init",
+    "openwiki code export --repo /data/projects/my-app --ref origin/release-2.3 --output /data/openwiki-results/my-app-release-2.3 --language zh-CN",
     "openwiki --update",
     "openwiki --update --mode personal",
     'openwiki "What can you do?"',

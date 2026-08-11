@@ -70,6 +70,111 @@ describe("parseCommand — help", () => {
   test("help documents the output language option", () => {
     expect(getHelpText()).toContain("-l, --language <locale>");
   });
+
+  test("help documents code export", () => {
+    const helpText = getHelpText();
+
+    expect(helpText).toContain(
+      "openwiki code export --repo <path> --ref <git-ref> --output <path>",
+    );
+    expect(helpText).toContain("--force");
+  });
+});
+
+describe("parseCommand — code export", () => {
+  test("parses a repository ref and custom output directory", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo",
+        "/data/projects/my-app",
+        "--ref",
+        "origin/release-2.3",
+        "--output",
+        "/data/openwiki-results/my-app-release-2.3",
+        "--language",
+        "zh-CN",
+      ]),
+    ).toMatchObject({
+      kind: "run",
+      command: "init",
+      mode: "code",
+      print: true,
+      shouldStart: true,
+      language: "zh-CN",
+      exportOptions: {
+        force: false,
+        gitRef: "origin/release-2.3",
+        outputDir: "/data/openwiki-results/my-app-release-2.3",
+        repoDir: "/data/projects/my-app",
+      },
+    });
+  });
+
+  test("supports equals syntax and explicit replacement", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=release",
+        "--output=/wiki",
+        "--force",
+        "--model-id=gpt-5.5",
+      ]),
+    ).toMatchObject({
+      kind: "run",
+      modelId: "gpt-5.5",
+      exportOptions: {
+        force: true,
+        gitRef: "release",
+        outputDir: "/wiki",
+        repoDir: "/repo",
+      },
+    });
+  });
+
+  test("reports every missing required option", () => {
+    const result = parseCommand(["code", "export", "--repo", "/repo"]);
+
+    expect(result).toMatchObject({
+      kind: "error",
+      message: "openwiki code export requires --ref, --output.",
+    });
+  });
+
+  test("rejects missing values and unknown options", () => {
+    expect(
+      parseCommand(["code", "export", "--repo", "--ref", "main"]),
+    ).toMatchObject({ kind: "error", message: "--repo requires a value." });
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+        "--unknown",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message: "Unknown option for code export: --unknown",
+    });
+  });
+
+  test("always uses the non-interactive run path and emits init telemetry", () => {
+    const command = parseCommand([
+      "code",
+      "export",
+      "--repo=/repo",
+      "--ref=main",
+      "--output=/wiki",
+    ]);
+
+    expect(shouldRunNonInteractively(command, true)).toBe(true);
+    expect(commandEmitsTelemetry(command)).toBe(true);
+  });
 });
 
 describe("parseCommand — chat default", () => {

@@ -70,6 +70,20 @@ OpenWiki runs in one of two modes. Bare `openwiki`, `openwiki --init`, and `open
 
 By default the CLI stays open after a run so you can send follow-up messages. Add `-p` / `--print` for a one-shot, non-interactive run that prints the final output and exits. `--init` and `--update` auto-exit on success in an interactive terminal, so the same command works one-shot or interactively.
 
+### Export a wiki from another branch
+
+Analyze any locally available branch, tag, or commit without switching the repository's active branch, then write the generated wiki to a custom directory:
+
+```sh
+openwiki code export \
+  --repo /data/projects/my-app \
+  --ref origin/release-2.3 \
+  --output /data/openwiki-results/my-app-release-2.3 \
+  --language zh-CN
+```
+
+The export runs from a temporary detached Git worktree, so it does not switch the active branch and does not include or modify uncommitted source changes. Only the explicitly selected output directory is published. OpenWiki does not fetch refs automatically; fetch the branch first if it is not available locally. The destination must be empty or absent by default. Pass `--force` to replace an existing non-empty destination after generation succeeds; OpenWiki restores the previous destination if publishing the new result fails.
+
 ## Explore your wiki
 
 Turn any wiki into an interactive node graph with a live, side-by-side Markdown reader:
