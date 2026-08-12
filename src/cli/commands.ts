@@ -20,6 +20,8 @@ export type CodeExportOptions = {
   force: boolean;
   gitRef: string;
   outputDir: string;
+  prompt?: string | null;
+  promptFile?: string | null;
   repoDir: string;
 };
 
@@ -417,11 +419,16 @@ export function parseCommand(argv: string[]): CliCommand {
 
 /** Parse the non-interactive code-export command. */
 function parseCodeExportCommand(argv: string[]): CliCommand {
+  let command: Extract<OpenWikiCommand, "init" | "update"> = "init";
+  let explicitCommand: Extract<OpenWikiCommand, "init" | "update"> | null =
+    null;
   let force = false;
   let gitRef: string | null = null;
   let language: string | null = null;
   let modelId: string | null = null;
   let outputDir: string | null = null;
+  let prompt: string | null = null;
+  let promptFile: string | null = null;
   let repoDir: string | null = null;
   let telemetryFile: string | null = null;
 
@@ -434,6 +441,21 @@ function parseCodeExportCommand(argv: string[]): CliCommand {
 
     if (arg === "--debug") {
       process.env.OPENWIKI_DEBUG = "1";
+      continue;
+    }
+
+    if (arg === "--init" || arg === "--update") {
+      const nextCommand = arg === "--init" ? "init" : "update";
+      if (explicitCommand && explicitCommand !== nextCommand) {
+        return {
+          kind: "error",
+          exitCode: 1,
+          message:
+            "openwiki code export accepts only one of --init or --update.",
+        };
+      }
+      command = nextCommand;
+      explicitCommand = nextCommand;
       continue;
     }
 
@@ -474,6 +496,34 @@ function parseCodeExportCommand(argv: string[]): CliCommand {
       if (option === "--repo") repoDir = value.trim();
       else if (option === "--ref") gitRef = value.trim();
       else outputDir = value.trim();
+      continue;
+    }
+
+    if (arg === "--prompt" || arg === "--prompt-file") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) {
+        return exportOptionValueError(arg);
+      }
+
+      if (arg === "--prompt") prompt = value.trim();
+      else promptFile = value.trim();
+      if (arg === "--prompt" ? !prompt : !promptFile) {
+        return exportOptionValueError(arg);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--prompt=") || arg.startsWith("--prompt-file=")) {
+      const separator = arg.indexOf("=");
+      const option = arg.slice(0, separator);
+      const value = arg.slice(separator + 1).trim();
+      if (!value) {
+        return exportOptionValueError(option);
+      }
+
+      if (option === "--prompt") prompt = value;
+      else promptFile = value;
       continue;
     }
 
@@ -573,17 +623,37 @@ function parseCodeExportCommand(argv: string[]): CliCommand {
     };
   }
 
+  if (command === "update" && force) {
+    return {
+      kind: "error",
+      exitCode: 1,
+      message:
+        "--force cannot be used with --update; update already replaces the existing output after a successful run.",
+    };
+  }
+
+  if (prompt && promptFile) {
+    return {
+      kind: "error",
+      exitCode: 1,
+      message:
+        "openwiki code export accepts only one of --prompt or --prompt-file.",
+    };
+  }
+
   const resolvedLanguage = resolveLanguage(language);
 
   return {
     kind: "run",
     exitCode: 0,
-    command: "init",
+    command,
     dryRun: false,
     exportOptions: {
       force,
       gitRef,
       outputDir,
+      prompt,
+      promptFile,
       repoDir,
     },
     language: resolvedLanguage.language ?? null,
@@ -941,7 +1011,7 @@ export const helpContent: HelpContent = {
   usage: [
     "openwiki [--init|--update] [message]",
     "openwiki code [--init|--update] [message]",
-    "openwiki code export --repo <path> --ref <git-ref> --output <path> [--language <locale>] [--force]",
+    "openwiki code export [--init|--update] --repo <path> --ref <git-ref> --output <path> [--language <locale>] [--prompt <text>|--prompt-file <path>] [--force]",
     "openwiki personal [--init|--update] [message]",
     "openwiki --mode <personal|code> [--init|--update] [message]",
     "openwiki [--language <locale>] [--init|--update] [message]",
@@ -968,7 +1038,7 @@ export const helpContent: HelpContent = {
     {
       label: "openwiki code export",
       description:
-        "Analyze a local repository ref in an isolated worktree and export its generated wiki to a custom directory.",
+        "Initialize or update a wiki for a local repository ref in an isolated worktree, then publish it to a custom directory.",
     },
     {
       label: "openwiki personal",
@@ -1078,9 +1148,19 @@ export const helpContent: HelpContent = {
         "For code export: destination directory for the generated wiki.",
     },
     {
+      label: "--prompt <text>",
+      description:
+        "For code export: optional generation instructions supplied directly on the command line.",
+    },
+    {
+      label: "--prompt-file <path>",
+      description:
+        "For code export: optional UTF-8 file containing generation instructions.",
+    },
+    {
       label: "--force",
       description:
-        "For code export: replace an existing non-empty output directory after generation succeeds.",
+        "For code export --init: replace an existing non-empty output directory after generation succeeds.",
     },
     {
       label: "--scheduled",
@@ -1113,7 +1193,9 @@ export const helpContent: HelpContent = {
     "openwiki --init",
     "openwiki personal --init",
     "openwiki code --init",
-    "openwiki code export --repo /data/projects/my-app --ref origin/release-2.3 --output /data/openwiki-results/my-app-release-2.3 --language zh-CN",
+    "openwiki code export --init --repo /data/projects/my-app --ref origin/release-2.3 --output /data/openwiki-results/my-app-release-2.3 --language zh-CN",
+    "openwiki code export --update --repo /data/projects/my-app --ref origin/release-2.3 --output /data/openwiki-results/my-app-release-2.3 --language zh-CN",
+    "openwiki code export --init --repo /data/projects/my-app --ref origin/release-2.3 --output /data/openwiki-results/my-app-release-2.3 --prompt-file ./wiki-prompt.md",
     "openwiki --update",
     "openwiki --update --mode personal",
     'openwiki "What can you do?"',

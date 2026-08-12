@@ -62,6 +62,8 @@ vi.mock("../../src/visualize/server.ts", () => ({
 vi.mock("../../src/cli/code-export.ts", () => ({
   publishWikiDirectory: vi.fn(),
   resolveCodeExportPaths: vi.fn(),
+  resolveCodeExportPrompt: vi.fn(),
+  seedWikiDirectoryForUpdate: vi.fn(),
   withTemporaryGitWorktree: vi.fn(),
 }));
 
@@ -89,6 +91,8 @@ import { runVisualizeServer } from "../../src/visualize/server.ts";
 import {
   publishWikiDirectory,
   resolveCodeExportPaths,
+  resolveCodeExportPrompt,
+  seedWikiDirectoryForUpdate,
   withTemporaryGitWorktree,
 } from "../../src/cli/code-export.ts";
 import type { CliCommand } from "../../src/cli/commands.ts";
@@ -120,6 +124,7 @@ const savedEnv = { ...process.env };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(resolveCodeExportPrompt).mockResolvedValue(undefined);
   stdout = [];
   stderr = [];
   savedExitCode = process.exitCode;
@@ -568,6 +573,7 @@ describe("runPrintCommand", () => {
         }),
     );
     vi.mocked(runCodeModeConnectors).mockResolvedValue("connector guidance");
+    vi.mocked(resolveCodeExportPrompt).mockResolvedValue(undefined);
     vi.mocked(runOpenWikiAgent).mockResolvedValue(undefined as never);
     vi.mocked(publishWikiDirectory).mockResolvedValue();
 
@@ -596,6 +602,7 @@ describe("runPrintCommand", () => {
     expect(resolveCodeExportPaths).toHaveBeenCalledWith(
       "/repo",
       "/exports/release",
+      "init",
       false,
     );
     expect(withTemporaryGitWorktree).toHaveBeenCalledWith(
@@ -603,6 +610,7 @@ describe("runPrintCommand", () => {
       "origin/release-2.3",
       expect.any(Function),
     );
+    expect(resolveCodeExportPrompt).toHaveBeenCalledWith(null, null);
     expect(ensureCodeModeRepoSetup).not.toHaveBeenCalled();
     expect(runCodeModeConnectors).toHaveBeenCalledWith(
       "/tmp/openwiki-export/checkout",
@@ -625,6 +633,147 @@ describe("runPrintCommand", () => {
       false,
     );
     expect(stderr.join("")).toContain("Exported OpenWiki to /exports/release");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("passes an optional export prompt through connector augmentation", async () => {
+    vi.mocked(resolveCodeExportPaths).mockResolvedValue({
+      outputDir: "/exports/release",
+      repoRoot: "/repo",
+    });
+    vi.mocked(resolveCodeExportPrompt).mockResolvedValue(
+      "Document features, usage, and source locations.",
+    );
+    vi.mocked(withTemporaryGitWorktree).mockImplementation(
+      async (_repoRoot, _gitRef, run) =>
+        run({
+          checkoutDir: "/tmp/openwiki-export/checkout",
+          commit: "1234567890abcdef1234567890abcdef12345678",
+        }),
+    );
+    vi.mocked(runCodeModeConnectors).mockResolvedValue(
+      "Document features, usage, and source locations.\n\nConnector evidence",
+    );
+    vi.mocked(runOpenWikiAgent).mockResolvedValue(undefined as never);
+    vi.mocked(publishWikiDirectory).mockResolvedValue();
+
+    await runPrintCommand(
+      makeCommand("run", {
+        command: "init",
+        dryRun: false,
+        exportOptions: {
+          force: false,
+          gitRef: "main",
+          outputDir: "/exports/release",
+          prompt: null,
+          promptFile: "./wiki-prompt.md",
+          repoDir: "/repo",
+        },
+        language: "zh-CN",
+        languageWarning: null,
+        mode: "code",
+        modeSource: "positional",
+        modelId: null,
+        print: true,
+        shouldStart: true,
+        userMessage: null,
+        telemetryFile: null,
+      }),
+    );
+
+    expect(resolveCodeExportPrompt).toHaveBeenCalledWith(
+      null,
+      "./wiki-prompt.md",
+    );
+    expect(runCodeModeConnectors).toHaveBeenCalledWith(
+      "/tmp/openwiki-export/checkout",
+      "Document features, usage, and source locations.",
+      expect.any(Function),
+    );
+    expect(runOpenWikiAgent).toHaveBeenCalledWith(
+      "init",
+      "/tmp/openwiki-export/checkout",
+      expect.objectContaining({
+        userMessage:
+          "Document features, usage, and source locations.\n\nConnector evidence",
+      }),
+      expect.any(Object),
+    );
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("updates from the existing exported wiki before running the agent", async () => {
+    vi.mocked(resolveCodeExportPaths).mockResolvedValue({
+      outputDir: "/exports/release",
+      repoRoot: "/repo",
+    });
+    vi.mocked(withTemporaryGitWorktree).mockImplementation(
+      async (_repoRoot, _gitRef, run) =>
+        run({
+          checkoutDir: "/tmp/openwiki-export/checkout",
+          commit: "1234567890abcdef1234567890abcdef12345678",
+        }),
+    );
+    vi.mocked(seedWikiDirectoryForUpdate).mockResolvedValue();
+    vi.mocked(runCodeModeConnectors).mockResolvedValue("update guidance");
+    vi.mocked(runOpenWikiAgent).mockResolvedValue(undefined as never);
+    vi.mocked(publishWikiDirectory).mockResolvedValue();
+
+    await runPrintCommand(
+      makeCommand("run", {
+        command: "update",
+        dryRun: false,
+        exportOptions: {
+          force: false,
+          gitRef: "origin/release-2.3",
+          outputDir: "/exports/release",
+          repoDir: "/repo",
+        },
+        language: "zh-CN",
+        languageWarning: null,
+        mode: "code",
+        modeSource: "positional",
+        modelId: null,
+        print: true,
+        shouldStart: true,
+        userMessage: null,
+        telemetryFile: null,
+      }),
+    );
+
+    expect(resolveCodeExportPaths).toHaveBeenCalledWith(
+      "/repo",
+      "/exports/release",
+      "update",
+      false,
+    );
+    expect(seedWikiDirectoryForUpdate).toHaveBeenCalledWith(
+      "/exports/release",
+      "/tmp/openwiki-export/checkout/openwiki",
+    );
+    expect(
+      vi.mocked(seedWikiDirectoryForUpdate).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(runCodeModeConnectors).mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(runOpenWikiAgent).toHaveBeenCalledWith(
+      "update",
+      "/tmp/openwiki-export/checkout",
+      expect.objectContaining({
+        language: "zh-CN",
+        outputMode: "repository",
+        userMessage: "update guidance",
+      }),
+      expect.any(Object),
+    );
+    expect(publishWikiDirectory).toHaveBeenCalledWith(
+      "/tmp/openwiki-export/checkout/openwiki",
+      "/exports/release",
+      true,
+    );
+    expect(stderr.join("")).toContain(
+      "Loading existing OpenWiki from /exports/release",
+    );
     expect(process.exitCode).toBe(0);
   });
 

@@ -16,6 +16,8 @@ import {
   publishWikiDirectory,
   removeTemporaryGitWorktreeSync,
   resolveCodeExportPaths,
+  resolveCodeExportPrompt,
+  seedWikiDirectoryForUpdate,
   withTemporaryGitWorktree,
 } from "../../src/cli/code-export.ts";
 
@@ -62,7 +64,7 @@ describe("resolveCodeExportPaths", () => {
     );
     await mkdir(nested, { recursive: true });
 
-    const result = await resolveCodeExportPaths(nested, output, false);
+    const result = await resolveCodeExportPaths(nested, output, "init", false);
 
     expect(result.repoRoot).toBe(await realpath(repo));
     expect(result.outputDir).toBe(
@@ -75,10 +77,10 @@ describe("resolveCodeExportPaths", () => {
     const output = await makeTempDirectory("openwiki-existing-output-");
     await writeFile(path.join(output, "keep.txt"), "keep", "utf8");
 
-    await expect(resolveCodeExportPaths(repo, output, false)).rejects.toThrow(
-      "Pass --force",
-    );
-    const result = await resolveCodeExportPaths(repo, output, true);
+    await expect(
+      resolveCodeExportPaths(repo, output, "init", false),
+    ).rejects.toThrow("Pass --force");
+    const result = await resolveCodeExportPaths(repo, output, "init", true);
     expect(result).toEqual({
       outputDir: await realpath(output),
       repoRoot: await realpath(repo),
@@ -91,9 +93,93 @@ describe("resolveCodeExportPaths", () => {
     await mkdir(repo);
     await git(repo, ["init", "-b", "main"]);
 
-    await expect(resolveCodeExportPaths(repo, parent, true)).rejects.toThrow(
+    await expect(
+      resolveCodeExportPaths(repo, parent, "init", true),
+    ).rejects.toThrow(
       "must not be the repository root or one of its ancestors",
     );
+  });
+
+  test("accepts a non-empty destination for update", async () => {
+    const repo = await createRepository();
+    const output = await makeTempDirectory("openwiki-update-output-");
+    await writeFile(path.join(output, "quickstart.md"), "old wiki", "utf8");
+
+    const result = await resolveCodeExportPaths(repo, output, "update", false);
+
+    expect(result.outputDir).toBe(await realpath(output));
+  });
+
+  test("requires an existing non-empty destination for update", async () => {
+    const repo = await createRepository();
+    const missing = path.join(
+      await makeTempDirectory("openwiki-update-parent-"),
+      "missing",
+    );
+    const empty = await makeTempDirectory("openwiki-update-empty-");
+
+    await expect(
+      resolveCodeExportPaths(repo, missing, "update", false),
+    ).rejects.toThrow("Run code export --init first");
+    await expect(
+      resolveCodeExportPaths(repo, empty, "update", false),
+    ).rejects.toThrow("non-empty output directory");
+  });
+});
+
+describe("resolveCodeExportPrompt", () => {
+  test("leaves the default prompt unchanged when neither option is set", async () => {
+    await expect(resolveCodeExportPrompt(null, null)).resolves.toBeUndefined();
+  });
+
+  test("normalizes an inline prompt", async () => {
+    await expect(
+      resolveCodeExportPrompt("  Document public features.  ", null),
+    ).resolves.toBe("Document public features.");
+  });
+
+  test("reads and trims a UTF-8 prompt file", async () => {
+    const directory = await makeTempDirectory("openwiki-prompt-");
+    const promptFile = path.join(directory, "wiki-prompt.md");
+    await writeFile(promptFile, "\n只记录功能、用法和源码位置。\n", "utf8");
+
+    await expect(resolveCodeExportPrompt(null, promptFile)).resolves.toBe(
+      "只记录功能、用法和源码位置。",
+    );
+  });
+
+  test("rejects conflicting, missing, and empty prompt files", async () => {
+    const directory = await makeTempDirectory("openwiki-prompt-errors-");
+    const emptyFile = path.join(directory, "empty.md");
+    await writeFile(emptyFile, " \n", "utf8");
+
+    await expect(resolveCodeExportPrompt("inline", emptyFile)).rejects.toThrow(
+      "only one of --prompt or --prompt-file",
+    );
+    await expect(
+      resolveCodeExportPrompt(null, path.join(directory, "missing.md")),
+    ).rejects.toThrow("Unable to read export prompt file");
+    await expect(resolveCodeExportPrompt(null, emptyFile)).rejects.toThrow(
+      "Export prompt file is empty",
+    );
+  });
+});
+
+describe("seedWikiDirectoryForUpdate", () => {
+  test("uses the exported wiki as the complete update baseline", async () => {
+    const output = await makeTempDirectory("openwiki-update-source-");
+    const checkoutRoot = await makeTempDirectory("openwiki-update-checkout-");
+    const checkoutWiki = path.join(checkoutRoot, "openwiki");
+    await mkdir(checkoutWiki);
+    await writeFile(path.join(output, "quickstart.md"), "external", "utf8");
+    await writeFile(path.join(checkoutWiki, "stale.md"), "stale", "utf8");
+
+    await seedWikiDirectoryForUpdate(output, checkoutWiki);
+
+    expect(await readdir(checkoutWiki)).toEqual(["quickstart.md"]);
+    await expect(
+      readFile(path.join(checkoutWiki, "quickstart.md"), "utf8"),
+    ).resolves.toBe("external");
   });
 });
 

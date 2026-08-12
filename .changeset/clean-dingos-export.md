@@ -2,4 +2,4 @@
 "openwiki": minor
 ---
 
-Add `openwiki code export` to analyze a local Git branch, tag, or commit in an isolated worktree and safely publish the generated wiki to a custom directory.
+Add `openwiki code export --init` and `openwiki code export --update` to initialize or incrementally update a wiki for a local Git branch, tag, or commit in an isolated worktree, optionally customize generation with `--prompt` or `--prompt-file`, and safely publish it to a custom directory.

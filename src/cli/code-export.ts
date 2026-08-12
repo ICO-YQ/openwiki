@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readdir,
   realpath,
+  readFile,
   rename,
   rm,
   stat,
@@ -27,10 +28,46 @@ export type TemporaryGitWorktree = {
   commit: string;
 };
 
+export type CodeExportCommand = "init" | "update";
+
+/** Resolve an optional inline prompt or UTF-8 prompt file. */
+export async function resolveCodeExportPrompt(
+  prompt: string | null | undefined,
+  promptFile: string | null | undefined,
+): Promise<string | undefined> {
+  const inlinePrompt = prompt?.trim();
+  const promptFileInput = promptFile?.trim();
+
+  if (inlinePrompt && promptFileInput) {
+    throw new Error(
+      "Code export accepts only one of --prompt or --prompt-file.",
+    );
+  }
+  if (inlinePrompt) return inlinePrompt;
+  if (!promptFileInput) return undefined;
+
+  const promptPath = resolveUserPath(promptFileInput);
+  let filePrompt: string;
+  try {
+    filePrompt = await readFile(promptPath, "utf8");
+  } catch (error) {
+    throw new Error(`Unable to read export prompt file: ${promptPath}`, {
+      cause: error,
+    });
+  }
+
+  const resolvedPrompt = filePrompt.trim();
+  if (!resolvedPrompt) {
+    throw new Error(`Export prompt file is empty: ${promptPath}`);
+  }
+  return resolvedPrompt;
+}
+
 /** Resolve and validate the source repository and destination directory. */
 export async function resolveCodeExportPaths(
   repoInput: string,
   outputInput: string,
+  command: CodeExportCommand,
   force: boolean,
 ): Promise<ResolvedCodeExportPaths> {
   const requestedRepo = resolveUserPath(repoInput);
@@ -54,7 +91,11 @@ export async function resolveCodeExportPaths(
   }
 
   const requestedOutput = resolveUserPath(outputInput);
-  await assertOutputCanBeReplaced(requestedOutput, force);
+  if (command === "update") {
+    await assertOutputCanBeUpdated(requestedOutput);
+  } else {
+    await assertOutputCanBeReplaced(requestedOutput, force);
+  }
   const outputDir = await canonicalizePotentialPath(requestedOutput);
   if (isSamePathOrAncestor(outputDir, repoRoot)) {
     throw new Error(
@@ -63,6 +104,25 @@ export async function resolveCodeExportPaths(
   }
 
   return { outputDir, repoRoot };
+}
+
+/** Copy an existing exported wiki into the detached checkout before update. */
+export async function seedWikiDirectoryForUpdate(
+  outputDir: string,
+  checkoutWikiDir: string,
+): Promise<void> {
+  await assertOutputCanBeUpdated(outputDir);
+
+  // The destination is always inside OpenWiki's temporary checkout. Replacing
+  // it prevents committed/stale pages in the selected ref from being merged
+  // into the external wiki that is the actual update baseline.
+  await rm(checkoutWikiDir, { force: true, recursive: true });
+  await cp(outputDir, checkoutWikiDir, {
+    dereference: false,
+    preserveTimestamps: true,
+    recursive: true,
+    verbatimSymlinks: true,
+  });
 }
 
 /**
@@ -274,6 +334,33 @@ async function assertOutputCanBeReplaced(
   if (!force && (await readdir(outputDir)).length > 0) {
     throw new Error(
       `Export output directory is not empty: ${outputDir}. Pass --force to replace it.`,
+    );
+  }
+}
+
+async function assertOutputCanBeUpdated(outputDir: string): Promise<void> {
+  let outputStat;
+  try {
+    outputStat = await lstat(outputDir);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      throw new Error(
+        `Export update requires an existing output directory: ${outputDir}. Run code export --init first.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
+  if (outputStat.isSymbolicLink()) {
+    throw new Error(`Export output must not be a symbolic link: ${outputDir}`);
+  }
+  if (!outputStat.isDirectory()) {
+    throw new Error(`Export output path is not a directory: ${outputDir}`);
+  }
+  if ((await readdir(outputDir)).length === 0) {
+    throw new Error(
+      `Export update requires a non-empty output directory: ${outputDir}. Run code export --init first.`,
     );
   }
 }

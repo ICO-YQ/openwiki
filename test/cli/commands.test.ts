@@ -75,9 +75,11 @@ describe("parseCommand — help", () => {
     const helpText = getHelpText();
 
     expect(helpText).toContain(
-      "openwiki code export --repo <path> --ref <git-ref> --output <path>",
+      "openwiki code export [--init|--update] --repo <path> --ref <git-ref> --output <path>",
     );
     expect(helpText).toContain("--force");
+    expect(helpText).toContain("--prompt <text>");
+    expect(helpText).toContain("--prompt-file <path>");
   });
 });
 
@@ -87,6 +89,7 @@ describe("parseCommand — code export", () => {
       parseCommand([
         "code",
         "export",
+        "--init",
         "--repo",
         "/data/projects/my-app",
         "--ref",
@@ -112,6 +115,41 @@ describe("parseCommand — code export", () => {
     });
   });
 
+  test("parses an incremental update using the existing output", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--update",
+        "--repo=/repo",
+        "--ref=release",
+        "--output=/wiki",
+      ]),
+    ).toMatchObject({
+      kind: "run",
+      command: "update",
+      print: true,
+      exportOptions: {
+        force: false,
+        gitRef: "release",
+        outputDir: "/wiki",
+        repoDir: "/repo",
+      },
+    });
+  });
+
+  test("defaults to init for backward compatibility", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+      ]),
+    ).toMatchObject({ kind: "run", command: "init" });
+  });
+
   test("supports equals syntax and explicit replacement", () => {
     expect(
       parseCommand([
@@ -131,6 +169,42 @@ describe("parseCommand — code export", () => {
         gitRef: "release",
         outputDir: "/wiki",
         repoDir: "/repo",
+      },
+    });
+  });
+
+  test("parses optional inline and file prompts", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=release",
+        "--output=/wiki",
+        "--prompt",
+        "  Document user-facing features only.  ",
+      ]),
+    ).toMatchObject({
+      kind: "run",
+      exportOptions: {
+        prompt: "Document user-facing features only.",
+        promptFile: null,
+      },
+    });
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=release",
+        "--output=/wiki",
+        "--prompt-file=./prompts/wiki=public.md",
+      ]),
+    ).toMatchObject({
+      kind: "run",
+      exportOptions: {
+        prompt: null,
+        promptFile: "./prompts/wiki=public.md",
       },
     });
   });
@@ -161,6 +235,69 @@ describe("parseCommand — code export", () => {
       kind: "error",
       message: "Unknown option for code export: --unknown",
     });
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+        "--prompt-file=",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message: "--prompt-file requires a value.",
+    });
+  });
+
+  test("rejects conflicting export modes and force on update", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--init",
+        "--update",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message: "openwiki code export accepts only one of --init or --update.",
+    });
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--update",
+        "--force",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message:
+        "--force cannot be used with --update; update already replaces the existing output after a successful run.",
+    });
+  });
+
+  test("rejects inline and file prompts used together", () => {
+    expect(
+      parseCommand([
+        "code",
+        "export",
+        "--repo=/repo",
+        "--ref=main",
+        "--output=/wiki",
+        "--prompt=Document features",
+        "--prompt-file=./wiki-prompt.md",
+      ]),
+    ).toMatchObject({
+      kind: "error",
+      message:
+        "openwiki code export accepts only one of --prompt or --prompt-file.",
+    });
   });
 
   test("always uses the non-interactive run path and emits init telemetry", () => {
@@ -174,6 +311,17 @@ describe("parseCommand — code export", () => {
 
     expect(shouldRunNonInteractively(command, true)).toBe(true);
     expect(commandEmitsTelemetry(command)).toBe(true);
+
+    const updateCommand = parseCommand([
+      "code",
+      "export",
+      "--update",
+      "--repo=/repo",
+      "--ref=main",
+      "--output=/wiki",
+    ]);
+    expect(shouldRunNonInteractively(updateCommand, true)).toBe(true);
+    expect(commandEmitsTelemetry(updateCommand)).toBe(true);
   });
 });
 

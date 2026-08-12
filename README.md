@@ -72,17 +72,51 @@ By default the CLI stays open after a run so you can send follow-up messages. Ad
 
 ### Export a wiki from another branch
 
-Analyze any locally available branch, tag, or commit without switching the repository's active branch, then write the generated wiki to a custom directory:
+Initialize a wiki for any locally available branch, tag, or commit without switching the repository's active branch, then write it to a custom directory:
 
 ```sh
-openwiki code export \
+openwiki code export --init \
   --repo /data/projects/my-app \
   --ref origin/release-2.3 \
   --output /data/openwiki-results/my-app-release-2.3 \
   --language zh-CN
 ```
 
-The export runs from a temporary detached Git worktree, so it does not switch the active branch and does not include or modify uncommitted source changes. Only the explicitly selected output directory is published. OpenWiki does not fetch refs automatically; fetch the branch first if it is not available locally. The destination must be empty or absent by default. Pass `--force` to replace an existing non-empty destination after generation succeeds; OpenWiki restores the previous destination if publishing the new result fails.
+Update the exported wiki later using the current contents of `--output` as the history and documentation baseline:
+
+```sh
+openwiki code export --update \
+  --repo /data/projects/my-app \
+  --ref origin/release-2.3 \
+  --output /data/openwiki-results/my-app-release-2.3 \
+  --language zh-CN
+```
+
+The export runs from a temporary detached Git worktree, so it does not switch the active branch and does not include or modify uncommitted source changes. Only the explicitly selected output directory is published. OpenWiki does not fetch refs automatically; fetch the branch first if it is not available locally.
+
+`--init` requires an absent or empty destination by default; pass `--force` to replace a non-empty destination after generation succeeds. `--update` requires an existing non-empty destination, copies that wiki into the temporary checkout, runs the incremental update against `--ref`, and replaces the destination only after the run succeeds. If publishing fails, OpenWiki restores the previous destination. Omitting both mode flags remains equivalent to `--init` for backward compatibility.
+
+Both modes accept optional generation instructions. Use `--prompt` for a short inline instruction:
+
+```sh
+openwiki code export --init \
+  --repo /data/projects/my-app \
+  --ref origin/release-2.3 \
+  --output /data/openwiki-results/my-app-release-2.3 \
+  --prompt "Document only what each feature does, how to use it, and where its implementation lives."
+```
+
+For longer reusable instructions, use a UTF-8 file. Relative prompt-file paths are resolved from the directory where the command is launched:
+
+```sh
+openwiki code export --update \
+  --repo /data/projects/my-app \
+  --ref origin/release-2.3 \
+  --output /data/openwiki-results/my-app-release-2.3 \
+  --prompt-file ./wiki-prompt.md
+```
+
+`--prompt` and `--prompt-file` are optional and mutually exclusive. When neither is provided, OpenWiki uses its standard generation instructions.
 
 ## Explore your wiki
 

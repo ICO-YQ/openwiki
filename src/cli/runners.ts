@@ -34,6 +34,8 @@ import { runVisualizeServer } from "../visualize/server.js";
 import {
   publishWikiDirectory,
   resolveCodeExportPaths,
+  resolveCodeExportPrompt,
+  seedWikiDirectoryForUpdate,
   withTemporaryGitWorktree,
 } from "./code-export.js";
 import type { CliCommand } from "./commands.js";
@@ -351,10 +353,16 @@ async function runCodeExport(
   if (!command.exportOptions) {
     throw new Error("Code export options are required.");
   }
+  if (command.command !== "init" && command.command !== "update") {
+    throw new Error("Code export requires an init or update command.");
+  }
+  const exportCommand = command.command;
   const {
     force,
     gitRef,
     outputDir: outputInput,
+    prompt = null,
+    promptFile = null,
     repoDir: repoInput,
   } = command.exportOptions;
   const runOptions: OpenWikiRunOptions = {
@@ -367,43 +375,59 @@ async function runCodeExport(
   };
   const telemetryContext: RunTelemetryContext = {};
 
-  await withRunTelemetry("init", runOptions, telemetryContext, async () => {
-    const { outputDir, repoRoot } = await resolveCodeExportPaths(
-      repoInput,
-      outputInput,
-      force,
-    );
+  await withRunTelemetry(
+    exportCommand,
+    runOptions,
+    telemetryContext,
+    async () => {
+      const { outputDir, repoRoot } = await resolveCodeExportPaths(
+        repoInput,
+        outputInput,
+        exportCommand,
+        force,
+      );
+      const promptMessage = await resolveCodeExportPrompt(prompt, promptFile);
 
-    process.stderr.write(`Preparing ${gitRef} from ${repoRoot}...\n`);
-    await withTemporaryGitWorktree(
-      repoRoot,
-      gitRef,
-      async ({ checkoutDir, commit }) => {
-        process.stderr.write(`Analyzing commit ${commit.slice(0, 12)}...\n`);
-        const userMessage = await runCodeModeConnectors(
-          checkoutDir,
-          undefined,
-          onEvent,
-        );
-        await runOpenWikiAgent(
-          "init",
-          checkoutDir,
-          {
-            ...runOptions,
-            threadId: createOpenWikiThreadId(checkoutDir),
-            userMessage,
-          },
-          telemetryContext,
-        );
-        await publishWikiDirectory(
-          path.join(checkoutDir, "openwiki"),
-          outputDir,
-          force,
-        );
-      },
-    );
-    process.stderr.write(`Exported OpenWiki to ${outputDir}\n`);
-  });
+      process.stderr.write(`Preparing ${gitRef} from ${repoRoot}...\n`);
+      await withTemporaryGitWorktree(
+        repoRoot,
+        gitRef,
+        async ({ checkoutDir, commit }) => {
+          process.stderr.write(`Analyzing commit ${commit.slice(0, 12)}...\n`);
+          if (exportCommand === "update") {
+            process.stderr.write(
+              `Loading existing OpenWiki from ${outputDir}...\n`,
+            );
+            await seedWikiDirectoryForUpdate(
+              outputDir,
+              path.join(checkoutDir, "openwiki"),
+            );
+          }
+          const userMessage = await runCodeModeConnectors(
+            checkoutDir,
+            promptMessage,
+            onEvent,
+          );
+          await runOpenWikiAgent(
+            exportCommand,
+            checkoutDir,
+            {
+              ...runOptions,
+              threadId: createOpenWikiThreadId(checkoutDir),
+              userMessage,
+            },
+            telemetryContext,
+          );
+          await publishWikiDirectory(
+            path.join(checkoutDir, "openwiki"),
+            outputDir,
+            exportCommand === "update" || force,
+          );
+        },
+      );
+      process.stderr.write(`Exported OpenWiki to ${outputDir}\n`);
+    },
+  );
 }
 
 /**
